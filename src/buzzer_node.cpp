@@ -296,10 +296,10 @@ void setup() {
   }
   Serial.println("✓ Main controller added as peer");
 
-  // Initial LED state: ON (ready)
-  currentLEDState = LED_ON;
-  savedLEDState = LED_ON;
-  digitalWrite(BUZZER_LED_PIN, HIGH);
+  // Initial LED state: BLINK (rapid blink while disconnected/connecting)
+  currentLEDState = LED_BLINK;
+  savedLEDState = LED_OFF;
+  lastBlinkTime = millis();
 
   // Initialize connection state (start as disconnected, will connect on first heartbeat)
   isConnected = false;

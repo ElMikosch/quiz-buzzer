@@ -8,8 +8,8 @@
 // ============================================================================
 
 // Buzzer Node Pins
-#define BUZZER_BUTTON_PIN 12 // Button input with internal pullup
-#define BUZZER_LED_PIN 13    // LED output
+#define BUZZER_BUTTON_PIN 25 // Button input with internal pullup
+#define BUZZER_LED_PIN 27    // LED output
 #define BUZZER_SPEAKER_PIN                                                     \
   14 // Reserved for future speaker (not implemented in v1)
 
@@ -26,6 +26,12 @@
 #define DEBOUNCE_DELAY_MS 50  // Button debounce time
 #define RETRY_INTERVAL_MS 10  // ESP-NOW retry interval
 #define MAX_RETRIES 3         // Maximum message retransmission attempts
+
+// Connection monitoring
+#define HEARTBEAT_INTERVAL_MS 2000 // Send heartbeat every 2 seconds
+#define CONNECTION_TIMEOUT_MS 5000 // Consider node disconnected after 5 seconds
+#define DISCONNECT_BLINK_INTERVAL_MS                                           \
+  100 // Fast blink when disconnected: 10Hz (100ms on, 100ms off)
 
 // ============================================================================
 // COMMUNICATION CONSTANTS
