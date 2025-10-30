@@ -7,9 +7,11 @@ A distributed ESP32-based quiz buzzer system with 4 wireless buzzer nodes and a 
 - **4 Independent Buzzer Nodes**: Wireless ESP32-based buttons with LED feedback
 - **First-Press Detection**: Reliable distributed timing across all buzzers
 - **Game State Management**: Ready, locked, and partial-lockout states
+- **Auto-Reconnection**: Automatic state recovery after power cycle or network issues
+- **Connection Monitoring**: Heartbeat system detects disconnections within 5 seconds
 - **Answer Validation**: Correct/wrong/reset controls for game host
 - **PC Integration**: USB serial interface (115200 baud) for quiz software
-- **Visual Feedback**: LED states (solid=ready, blink=selected, off=locked)
+- **Visual Feedback**: LED states (solid=ready, blink=selected, off=locked, rapid blink=disconnected)
 - **Low Latency**: Sub-100ms response time via ESP-NOW protocol
 - **Battery Powered Buzzers**: ~4-6 hours operation with light sleep mode
 
@@ -67,13 +69,15 @@ screen /dev/ttyUSB0 115200
 
 Messages sent over USB serial (newline-terminated):
 ```
-BUZZER:1    # Buzzer 1 pressed
-BUZZER:2    # Buzzer 2 pressed
-BUZZER:3    # Buzzer 3 pressed
-BUZZER:4    # Buzzer 4 pressed
-CORRECT     # Correct answer button
-WRONG       # Wrong answer button
-RESET       # Reset button
+BUZZER:1      # Buzzer 1 pressed
+BUZZER:2      # Buzzer 2 pressed
+BUZZER:3      # Buzzer 3 pressed
+BUZZER:4      # Buzzer 4 pressed
+CORRECT       # Correct answer button
+WRONG         # Wrong answer button
+RESET         # Reset button
+DISCONNECT:2  # Buzzer 2 disconnected
+RECONNECT:2   # Buzzer 2 reconnected
 ```
 
 Example Python code:
@@ -146,6 +150,19 @@ pio device monitor -e main_controller
 - Verify USB drivers installed
 - Check serial port permissions (Linux: add user to `dialout` group)
 - Ensure main controller receiving buzzer presses (check local serial)
+
+### Buzzer Shows Rapid Blinking (10Hz)
+- This indicates disconnection from main controller
+- Check main controller is powered and running
+- Verify both devices on same WiFi channel (channel 1)
+- Move buzzer closer to main controller (within ~20m)
+- Check serial output on main controller for `DISCONNECT:<id>` messages
+- Buzzer will auto-reconnect when heartbeat resumes
+
+### Buzzer Reconnects But Wrong LED State
+- System automatically syncs state on reconnection
+- Check serial output for `STATE_SYNC` messages
+- If issue persists, press RESET button on main controller to clear all state
 
 ### Build Errors
 - Ensure PlatformIO is updated: `pio upgrade`

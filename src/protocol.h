@@ -7,7 +7,10 @@
 enum MessageType : uint8_t {
   MSG_BUTTON_PRESS = 1,
   MSG_LED_COMMAND = 2,
-  MSG_ACK = 3
+  MSG_ACK = 3,
+  MSG_HEARTBEAT = 4,
+  MSG_STATE_REQUEST = 5,
+  MSG_STATE_SYNC = 6
 };
 
 // LED states

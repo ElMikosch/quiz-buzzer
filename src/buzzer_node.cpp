@@ -20,12 +20,17 @@
 
 // LED state management
 LEDState currentLEDState = LED_OFF;
+LEDState savedLEDState = LED_OFF; // Save state before disconnection
 unsigned long lastBlinkTime = 0;
 bool blinkState = false;
 
 // Button state management
 bool lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
+
+// Connection monitoring
+unsigned long lastHeartbeatTime = 0;
+bool isConnected = false;
 
 // Main controller MAC address (will be set to AA:BB:CC:DD:EE:00)
 uint8_t mainControllerMAC[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x00};
@@ -43,9 +48,73 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
   BuzzerMessage msg;
   memcpy(&msg, data, sizeof(msg));
 
-  // Only process LED commands for this node
+  // Handle heartbeat messages from controller
+  if (msg.msg_type == MSG_HEARTBEAT) {
+    unsigned long now = millis();
+    bool wasConnected = isConnected;
+    lastHeartbeatTime = now;
+    
+    if (!wasConnected) {
+      // We just reconnected
+      Serial.println("Connected to controller");
+      isConnected = true;
+      
+      // Request current game state
+      BuzzerMessage stateReq;
+      stateReq.node_id = NODE_ID;
+      stateReq.msg_type = MSG_STATE_REQUEST;
+      stateReq.value = 0;
+      stateReq.timestamp = now;
+      
+      Serial.println("Requesting state sync...");
+      esp_now_send(mainControllerMAC, (uint8_t *)&stateReq, sizeof(stateReq));
+    }
+    return;
+  }
+
+  // Handle state sync messages
+  if (msg.msg_type == MSG_STATE_SYNC && msg.node_id == NODE_ID) {
+    Serial.println("=== STATE SYNC RECEIVED ===");
+    
+    // Unpack game state from value field
+    uint8_t lockedBuzzers = msg.value & 0x0F;     // Bits 0-3
+    uint8_t selectedBuzzer = (msg.value >> 4) & 0x07; // Bits 4-6
+    
+    Serial.print("  Locked buzzers: 0x");
+    Serial.print(lockedBuzzers, HEX);
+    Serial.print(" | Selected buzzer: ");
+    Serial.println(selectedBuzzer);
+    
+    // Determine correct LED state based on game state
+    bool isLocked = lockedBuzzers & (1 << (NODE_ID - 1));
+    bool isSelected = (selectedBuzzer == NODE_ID);
+    
+    Serial.print("  This node: locked=");
+    Serial.print(isLocked ? "YES" : "NO");
+    Serial.print(" | selected=");
+    Serial.println(isSelected ? "YES" : "NO");
+    
+    if (isSelected) {
+      currentLEDState = LED_BLINK;
+      lastBlinkTime = millis(); // Reset blink timer to start immediately
+      Serial.println("  -> LED state: BLINK (selected)");
+    } else if (isLocked) {
+      currentLEDState = LED_OFF;
+      Serial.println("  -> LED state: OFF (locked)");
+    } else {
+      currentLEDState = LED_ON;
+      Serial.println("  -> LED state: ON (ready)");
+    }
+    
+    savedLEDState = currentLEDState;
+    Serial.println("=== STATE SYNC COMPLETE ===");
+    return;
+  }
+
+  // Handle LED commands for this node
   if (msg.node_id == NODE_ID && msg.msg_type == MSG_LED_COMMAND) {
     currentLEDState = (LEDState)msg.value;
+    savedLEDState = currentLEDState; // Save in case of disconnection
     Serial.print("LED command received: ");
     Serial.println(msg.value);
 
@@ -116,10 +185,35 @@ void handleButton() {
 }
 
 // ============================================================================
+// CONNECTION MONITORING
+// ============================================================================
+
+void checkConnection() {
+  unsigned long now = millis();
+  bool wasConnected = isConnected;
+  
+  // Check if we've timed out
+  if (isConnected && (now - lastHeartbeatTime > CONNECTION_TIMEOUT_MS)) {
+    isConnected = false;
+    Serial.println("Disconnected from controller (timeout)");
+    
+    // Save current LED state before entering disconnected mode
+    savedLEDState = currentLEDState;
+    
+    // Enter rapid blink mode to indicate disconnection
+    currentLEDState = LED_BLINK;
+    lastBlinkTime = now; // Reset blink timer
+  }
+}
+
+// ============================================================================
 // LED HANDLING
 // ============================================================================
 
 void handleLED() {
+  unsigned long now = millis();
+  unsigned long blinkInterval = isConnected ? BLINK_INTERVAL_MS : DISCONNECT_BLINK_INTERVAL_MS;
+  
   switch (currentLEDState) {
   case LED_ON:
     digitalWrite(BUZZER_LED_PIN, HIGH);
@@ -131,10 +225,11 @@ void handleLED() {
 
   case LED_BLINK:
     // Non-blocking blink using timer
-    if (millis() - lastBlinkTime >= BLINK_INTERVAL_MS) {
+    // Fast blink when disconnected, slow blink when connected
+    if (now - lastBlinkTime >= blinkInterval) {
       blinkState = !blinkState;
       digitalWrite(BUZZER_LED_PIN, blinkState ? HIGH : LOW);
-      lastBlinkTime = millis();
+      lastBlinkTime = now;
     }
     break;
   }
@@ -203,14 +298,21 @@ void setup() {
 
   // Initial LED state: ON (ready)
   currentLEDState = LED_ON;
+  savedLEDState = LED_ON;
   digitalWrite(BUZZER_LED_PIN, HIGH);
+
+  // Initialize connection state (start as disconnected, will connect on first heartbeat)
+  isConnected = false;
+  lastHeartbeatTime = millis(); // Initialize to current time
 
   Serial.println("========================================");
   Serial.println("Buzzer node ready!");
+  Serial.println("Waiting for controller heartbeat...");
   Serial.println("========================================");
 }
 
 void loop() {
+  checkConnection();
   handleButton();
   handleLED();
   delay(1); // Small delay to prevent watchdog issues

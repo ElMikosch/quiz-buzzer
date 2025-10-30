@@ -100,6 +100,43 @@ The main controller manages the following game states:
 | `selectedBuzzer` | `uint8_t` | Currently selected buzzer (1-4), or 0 if none |
 | `lockedBuzzers` | `uint8_t` | Bitmask of locked buzzers (bit 0-3 for buzzers 1-4) |
 | `lastPressTime` | `uint32_t` | Timestamp of last press (for tie-breaking) |
+| `nodeLastSeen[]` | `unsigned long[4]` | Timestamp of last message from each node |
+| `nodeConnected[]` | `bool[4]` | Connection status for each node |
+
+## Connection Monitoring & State Recovery
+
+The system includes automatic connection monitoring to handle buzzer node disconnections (power cycles, network issues, etc.):
+
+### Heartbeat System
+- Main controller broadcasts heartbeat every **2 seconds**
+- Buzzer nodes track time since last heartbeat
+- Timeout after **5 seconds** without heartbeat
+- Disconnected buzzers show **rapid LED blink** (10Hz / 100ms interval)
+
+### Reconnection Flow
+When a buzzer node reconnects (after timeout or power cycle):
+
+1. **Detection**: Node receives heartbeat after being disconnected
+2. **State Request**: Node sends `MSG_STATE_REQUEST` to main controller
+3. **State Sync**: Main controller sends `MSG_STATE_SYNC` with packed game state:
+   - Bits 0-3: `lockedBuzzers` bitmask
+   - Bits 4-6: `selectedBuzzer` (0 = none, 1-4 = buzzer ID)
+4. **LED Restoration**: Node unpacks state and restores correct LED behavior:
+   - If node is selected → LED_BLINK (2Hz)
+   - If node is locked → LED_OFF
+   - Otherwise → LED_ON (ready)
+
+### State Preservation During Disconnection
+- Main controller maintains game state regardless of node connectivity
+- Locked buzzers remain locked even if they disconnect/reconnect
+- Selected buzzer status is preserved
+- When reconnecting, nodes synchronize to current game state
+
+### Connection Status Tracking
+- Main controller tracks last-seen timestamp for each node
+- `DISCONNECT:<id>` logged when 5s timeout detected
+- `RECONNECT:<id>` logged when node sends any message after timeout
+- Connection status does not affect game state logic
 
 ## Bitmask Operations
 
@@ -159,3 +196,20 @@ if (lockedBuzzers == 0x0F) {
 ### Scenario 4: Emergency Reset
 1. Any state
 2. Host presses RESET → STATE_READY (force clear all state)
+
+### Scenario 5: Buzzer Reconnection During Game
+1. Start in STATE_READY (all LEDs on)
+2. Buzzer 1 presses → STATE_LOCKED (buzzer 1 blinks)
+3. Host presses WRONG → STATE_PARTIAL_LOCKOUT (buzzer 1 locked/off, 2/3/4 on)
+4. Buzzer 2 power cycled (unplugged)
+   - Main controller detects timeout after 5s → logs `DISCONNECT:2`
+   - Buzzer 2 LED enters rapid blink (10Hz) during disconnection
+   - Game state preserved: buzzer 1 still locked
+5. Buzzer 2 powered back on
+   - Receives heartbeat from controller
+   - Sends `MSG_STATE_REQUEST`
+   - Controller logs `RECONNECT:2`
+   - Receives `MSG_STATE_SYNC` with: `lockedBuzzers=0x01` (bit 0 set), `selectedBuzzer=0`
+   - LED restores to solid ON (ready state, since not locked or selected)
+6. Buzzer 2 can now press button normally
+7. Game continues as before reconnection

@@ -42,6 +42,11 @@ int queueHead = 0;
 int queueTail = 0;
 int queueCount = 0;
 
+// Connection tracking
+unsigned long lastHeartbeatTime = 0;
+unsigned long nodeLastSeen[NUM_BUZZERS] = {0, 0, 0, 0};
+bool nodeConnected[NUM_BUZZERS] = {false, false, false, false};
+
 // ============================================================================
 // SERIAL MESSAGE QUEUE
 // ============================================================================
@@ -103,6 +108,80 @@ void updateAllLEDs() {
       }
     }
   }
+}
+
+// ============================================================================
+// CONNECTION MONITORING & HEARTBEAT
+// ============================================================================
+
+void broadcastHeartbeat() {
+  BuzzerMessage msg;
+  msg.node_id = 0; // 0 = broadcast from controller
+  msg.msg_type = MSG_HEARTBEAT;
+  msg.value = 0;
+  msg.timestamp = millis();
+
+  // Send to each buzzer individually (more reliable than broadcast)
+  for (int i = 0; i < NUM_BUZZERS; i++) {
+    esp_now_send(buzzerMACs[i], (uint8_t*)&msg, sizeof(msg));
+  }
+}
+
+void updateNodeConnection(uint8_t nodeId) {
+  if (nodeId < 1 || nodeId > NUM_BUZZERS) return;
+  
+  unsigned long now = millis();
+  bool wasConnected = nodeConnected[nodeId - 1];
+  nodeLastSeen[nodeId - 1] = now;
+  nodeConnected[nodeId - 1] = true;
+
+  if (!wasConnected) {
+    // Node reconnected
+    Serial.print("RECONNECT:");
+    Serial.println(nodeId);
+  }
+}
+
+void checkNodeTimeouts() {
+  unsigned long now = millis();
+  
+  for (uint8_t i = 0; i < NUM_BUZZERS; i++) {
+    if (nodeConnected[i]) {
+      if (now - nodeLastSeen[i] > CONNECTION_TIMEOUT_MS) {
+        // Node timed out
+        nodeConnected[i] = false;
+        Serial.print("DISCONNECT:");
+        Serial.println(i + 1);
+      }
+    }
+  }
+}
+
+void sendStateSync(uint8_t nodeId) {
+  if (nodeId < 1 || nodeId > NUM_BUZZERS) return;
+
+  BuzzerMessage msg;
+  msg.node_id = nodeId;
+  msg.msg_type = MSG_STATE_SYNC;
+  msg.timestamp = millis();
+  
+  // Pack game state into value field:
+  // Bits 0-3: locked buzzers bitmask
+  // Bits 4-6: selected buzzer (0-4)
+  // Bit 7: unused
+  msg.value = lockedBuzzers | (selectedBuzzer << 4);
+
+  esp_now_send(buzzerMACs[nodeId - 1], (uint8_t*)&msg, sizeof(msg));
+  
+  Serial.print("STATE_SYNC:");
+  Serial.print(nodeId);
+  Serial.print(" (state=");
+  Serial.print(currentState);
+  Serial.print(", selected=");
+  Serial.print(selectedBuzzer);
+  Serial.print(", locked=0x");
+  Serial.print(lockedBuzzers, HEX);
+  Serial.println(")");
 }
 
 // ============================================================================
@@ -217,9 +296,17 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
   BuzzerMessage msg;
   memcpy(&msg, data, sizeof(msg));
 
-  // Process button press messages
+  // Update connection tracking for any message from a node
+  updateNodeConnection(msg.node_id);
+
+  // Process message based on type
   if (msg.msg_type == MSG_BUTTON_PRESS) {
     handleBuzzerPress(msg.node_id, msg.timestamp);
+  } else if (msg.msg_type == MSG_STATE_REQUEST) {
+    // Node is requesting current game state (reconnection)
+    Serial.print("State request from node ");
+    Serial.println(msg.node_id);
+    sendStateSync(msg.node_id);
   }
 }
 
@@ -349,6 +436,16 @@ void setup() {
 }
 
 void loop() {
+  // Broadcast heartbeat periodically
+  unsigned long now = millis();
+  if (now - lastHeartbeatTime >= HEARTBEAT_INTERVAL_MS) {
+    broadcastHeartbeat();
+    lastHeartbeatTime = now;
+  }
+
+  // Check for node timeouts
+  checkNodeTimeouts();
+
   handleControlButtons();
   processMessageQueue();
   delay(1); // Small delay to prevent watchdog issues

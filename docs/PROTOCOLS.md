@@ -19,8 +19,8 @@ These are set at startup via `esp_wifi_set_mac()`. No manual MAC address configu
 ```cpp
 struct BuzzerMessage {
   uint8_t node_id;      // 1-4 for buzzer nodes, 0 for main controller
-  uint8_t msg_type;     // MSG_BUTTON_PRESS, MSG_LED_COMMAND, MSG_ACK
-  uint8_t value;        // LED state or press count
+  uint8_t msg_type;     // MSG_BUTTON_PRESS, MSG_LED_COMMAND, MSG_ACK, MSG_HEARTBEAT, MSG_STATE_REQUEST, MSG_STATE_SYNC
+  uint8_t value;        // LED state, press count, or packed game state
   uint32_t timestamp;   // millis() for deduplication
 };
 ```
@@ -32,6 +32,9 @@ struct BuzzerMessage {
 | MSG_BUTTON_PRESS | 1 | Buzzer → Main | Button pressed on buzzer node |
 | MSG_LED_COMMAND | 2 | Main → Buzzer | LED control command |
 | MSG_ACK | 3 | Bidirectional | Acknowledgment (future use) |
+| MSG_HEARTBEAT | 4 | Main → Buzzers | Periodic heartbeat broadcast (every 2s) |
+| MSG_STATE_REQUEST | 5 | Buzzer → Main | Request game state after reconnection |
+| MSG_STATE_SYNC | 6 | Main → Buzzer | Full game state synchronization |
 
 ### LED States
 
@@ -39,7 +42,39 @@ struct BuzzerMessage {
 |-------|-------|-------------|
 | LED_OFF | 0 | LED off (locked out) |
 | LED_ON | 1 | LED solid on (ready/active) |
-| LED_BLINK | 2 | LED blinking at 2Hz (selected) |
+| LED_BLINK | 2 | LED blinking at 2Hz (selected) or 10Hz (disconnected) |
+
+### Connection Monitoring & Recovery
+
+The system includes automatic connection monitoring and state recovery:
+
+**Heartbeat Mechanism:**
+- Main controller broadcasts `MSG_HEARTBEAT` every 2 seconds to all buzzers
+- Buzzer nodes track time since last heartbeat received
+- If no heartbeat for 5 seconds, buzzer enters "disconnected" state
+- Disconnected state indicated by rapid LED blink (10Hz / 100ms interval)
+
+**Reconnection Flow:**
+1. Buzzer detects heartbeat after timeout (power cycle or network issue)
+2. Buzzer sends `MSG_STATE_REQUEST` to main controller
+3. Main controller responds with `MSG_STATE_SYNC` containing current game state
+4. Buzzer unpacks state and restores correct LED behavior
+
+**State Sync Message Format (value field):**
+- Bits 0-3: `lockedBuzzers` bitmask (bit 0 = buzzer 1, bit 1 = buzzer 2, etc.)
+- Bits 4-6: `selectedBuzzer` (0 = none, 1-4 = buzzer ID)
+- Bit 7: unused
+
+**Connection Timing Constants:**
+- `HEARTBEAT_INTERVAL_MS`: 2000 (2 seconds)
+- `CONNECTION_TIMEOUT_MS`: 5000 (5 seconds)
+- `RECONNECT_GRACE_PERIOD_MS`: 1000 (1 second after reconnect to process state sync)
+- `DISCONNECT_BLINK_INTERVAL_MS`: 100 (rapid blink during disconnection)
+
+**Serial Logging:**
+- `DISCONNECT:<node_id>` - Node has timed out
+- `RECONNECT:<node_id>` - Node has reconnected
+- `STATE_SYNC:<node_id> (state=..., selected=..., locked=...)` - State sync sent
 
 ### Message Flow Examples
 
@@ -54,6 +89,18 @@ struct BuzzerMessage {
 2. Main sends `BuzzerMessage{node_id=3, msg_type=MSG_LED_COMMAND, value=LED_BLINK, timestamp=...}`
 3. Node 3 receives and updates its LED state
 4. No acknowledgment required (fire-and-forget)
+
+#### Heartbeat & Connection Monitoring
+1. Main controller broadcasts `BuzzerMessage{node_id=0, msg_type=MSG_HEARTBEAT, value=0, timestamp=...}` every 2 seconds
+2. All buzzer nodes receive and update their last-heartbeat timestamp
+3. If a buzzer doesn't receive heartbeat for 5 seconds, it enters disconnected state (rapid LED blink)
+4. Main controller tracks last-seen timestamp for each node; logs `DISCONNECT:<id>` if timeout detected
+
+#### Reconnection & State Sync
+1. Buzzer node detects heartbeat after being disconnected (power cycled or network restored)
+2. Node sends `BuzzerMessage{node_id=X, msg_type=MSG_STATE_REQUEST, value=0, timestamp=...}`
+3. Main controller logs `RECONNECT:<id>` and sends `MSG_STATE_SYNC` with packed game state
+4. Node unpacks state (locked bitmask + selected buzzer) and restores correct LED state
 
 ### Communication Parameters
 
@@ -84,6 +131,9 @@ All messages are newline-terminated ASCII text (`\n` = 0x0A).
 | `CORRECT\n` | Correct answer button pressed | `CORRECT\n` |
 | `WRONG\n` | Wrong answer button pressed | `WRONG\n` |
 | `RESET\n` | Reset button pressed | `RESET\n` |
+| `DISCONNECT:<id>\n` | Buzzer node has disconnected (timeout) | `DISCONNECT:2\n` |
+| `RECONNECT:<id>\n` | Buzzer node has reconnected | `RECONNECT:2\n` |
+| `STATE_SYNC:<id> (...)\n` | State sync sent to reconnected node (debug) | `STATE_SYNC:2 (state=1, selected=1, locked=0x0)\n` |
 
 ### Reading Serial Messages (Python Example)
 
