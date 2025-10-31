@@ -90,11 +90,14 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
     // Unpack game state from value field
     uint8_t lockedBuzzers = msg.value & 0x0F;     // Bits 0-3
     uint8_t selectedBuzzer = (msg.value >> 4) & 0x07; // Bits 4-6
+    bool isPartialLockout = (msg.value & 0x80) != 0;  // Bit 7
     
     Serial.print("  Locked buzzers: 0x");
     Serial.print(lockedBuzzers, HEX);
     Serial.print(" | Selected buzzer: ");
-    Serial.println(selectedBuzzer);
+    Serial.print(selectedBuzzer);
+    Serial.print(" | Mode: ");
+    Serial.println(isPartialLockout ? "PARTIAL_LOCKOUT" : "LOCKED");
     
     // Determine correct LED state based on game state
     bool isLocked = lockedBuzzers & (1 << (NODE_ID - 1));
@@ -112,12 +115,23 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
       isInFastBlinkPhase = true;
       fastBlinkStartTime = millis();
       Serial.println("  -> LED state: BLINK (selected)");
-    } else if (isLocked) {
-      currentLEDState = LED_OFF;
-      Serial.println("  -> LED state: OFF (locked)");
-    } else {
+    } else if (selectedBuzzer == 0) {
+      // STATE_READY: no buzzer selected, all LEDs ON
       currentLEDState = LED_ON;
-      Serial.println("  -> LED state: ON (ready)");
+      Serial.println("  -> LED state: ON (ready state)");
+    } else if (isPartialLockout) {
+      // In PARTIAL_LOCKOUT: only explicitly locked buzzers turn OFF
+      if (isLocked) {
+        currentLEDState = LED_OFF;
+        Serial.println("  -> LED state: OFF (locked in PARTIAL_LOCKOUT)");
+      } else {
+        currentLEDState = LED_ON;
+        Serial.println("  -> LED state: ON (not locked in PARTIAL_LOCKOUT)");
+      }
+    } else {
+      // In LOCKED state: all non-selected buzzers turn OFF
+      currentLEDState = LED_OFF;
+      Serial.println("  -> LED state: OFF (not selected in LOCKED)");
     }
     
     savedLEDState = currentLEDState;

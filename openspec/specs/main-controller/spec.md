@@ -83,62 +83,41 @@ The main controller SHALL send event messages to the PC via USB serial port.
 - **AND** oldest message discarded if queue is full
 
 ### Requirement: Serial Command Input Processing
-The main controller SHALL accept and process control commands received via USB serial port from the PC.
+The main controller SHALL accept and process control commands received via USB serial port from the PC, validating that commands are only executed in valid game states.
 
-#### Scenario: Process CORRECT command from serial
+#### Scenario: Process CORRECT command from serial (MODIFIED)
 - **WHEN** receiving "CORRECT\n" or "CORRECT\r\n" from serial port
+- **AND** a buzzer is currently selected (selectedBuzzer != 0)
 - **THEN** the controller SHALL call handleCorrectAnswer()
 - **AND** send "CMD_ACK:CORRECT\n" acknowledgment
 - **AND** execute identical behavior to physical CORRECT button press
 - **AND** process the command within 10ms
 
-#### Scenario: Process WRONG command from serial
+#### Scenario: Process CORRECT command with no buzzer selected (ADDED)
+- **WHEN** receiving "CORRECT\n" or "CORRECT\r\n" from serial port
+- **AND** no buzzer is currently selected (selectedBuzzer == 0)
+- **THEN** the controller SHALL ignore the command
+- **AND** send "CMD_ACK:CORRECT\n" acknowledgment
+- **AND** log "No buzzer selected, ignoring CORRECT command" to Serial
+- **AND** NOT change game state
+- **AND** NOT send any message to PC interface
+
+#### Scenario: Process WRONG command from serial (MODIFIED)
 - **WHEN** receiving "WRONG\n" or "WRONG\r\n" from serial port
+- **AND** a buzzer is currently selected (selectedBuzzer != 0)
 - **THEN** the controller SHALL call handleWrongAnswer()
 - **AND** send "CMD_ACK:WRONG\n" acknowledgment
 - **AND** execute identical behavior to physical WRONG button press
 - **AND** process the command within 10ms
 
-#### Scenario: Process RESET command from serial
-- **WHEN** receiving "RESET\n" or "RESET\r\n" from serial port
-- **THEN** the controller SHALL call handleFullReset()
-- **AND** send "CMD_ACK:RESET\n" acknowledgment
-- **AND** execute identical behavior to physical RESET button press
-- **AND** process the command within 10ms
-
-#### Scenario: Handle unknown serial command
-- **WHEN** receiving an unrecognized command string
-- **THEN** the controller SHALL NOT change game state
-- **AND** send "CMD_ERR:UNKNOWN:<command>\n" response
-- **AND** continue normal operation
-
-#### Scenario: Serial input buffer management
-- **WHEN** accumulating serial input characters
-- **THEN** the controller SHALL use a 256-byte buffer
-- **AND** process newline (\n or \r) as command terminator
-- **AND** reset buffer after each command
-- **AND** trim whitespace from commands before parsing
-
-#### Scenario: Buffer overflow protection
-- **WHEN** receiving more than 256 bytes without newline
-- **THEN** the controller SHALL discard the buffer
-- **AND** send "CMD_ERR:BUFFER_OVERFLOW\n"
-- **AND** continue processing subsequent commands
-- **AND** NOT crash or hang
-
-#### Scenario: Non-blocking serial input processing
-- **WHEN** calling handleSerialInput() in main loop
-- **THEN** the function SHALL only process available bytes
-- **AND** NOT block waiting for input
-- **AND** accumulate partial commands across loop iterations
-- **AND** maintain system responsiveness (<5ms added to loop time)
-
-#### Scenario: Concurrent serial commands and button presses
-- **WHEN** serial commands arrive while button inputs are active
-- **THEN** both input sources SHALL be processed each loop iteration
-- **AND** commands SHALL execute in the order received
-- **AND** neither input method SHALL block the other
-- **AND** game state SHALL remain consistent
+#### Scenario: Process WRONG command with no buzzer selected (ADDED)
+- **WHEN** receiving "WRONG\n" or "WRONG\r\n" from serial port
+- **AND** no buzzer is currently selected (selectedBuzzer == 0)
+- **THEN** the controller SHALL ignore the command
+- **AND** send "CMD_ACK:WRONG\n" acknowledgment
+- **AND** log "No buzzer selected, ignoring WRONG command" to Serial
+- **AND** NOT change game state
+- **AND** NOT send any message to PC interface
 
 ### Requirement: Power-On Initialization
 The main controller SHALL initialize all subsystems on power-up.
@@ -220,35 +199,40 @@ The main controller SHALL track connection status of each buzzer node.
 - **AND** wait for state sync request
 
 ### Requirement: State Synchronization Protocol
-The main controller SHALL respond to state sync requests with current game state.
+The main controller SHALL respond to state sync requests with current game state, including game state mode to distinguish between full lockout and partial lockout states.
 
-#### Scenario: Receive state sync request
-- **WHEN** receiving MSG_STATE_REQUEST from a buzzer node
-- **THEN** the controller SHALL determine correct LED state for that node
-- **AND** send MSG_STATE_SYNC with current game state
-- **AND** include locked buzzer bitmask and selected buzzer ID
-- **AND** log state sync event to Serial
+#### Scenario: State sync message format (MODIFIED)
+- **WHEN** sending MSG_STATE_SYNC to a buzzer node
+- **THEN** the controller SHALL pack game state into the value field as follows:
+  - Bits 0-3: locked buzzers bitmask (bit 0 = buzzer 1, bit 1 = buzzer 2, etc.)
+  - Bits 4-6: selected buzzer ID (0-4, where 0 = none selected)
+  - Bit 7: game state mode (0 = LOCKED/READY, 1 = PARTIAL_LOCKOUT)
+- **AND** bit 7 SHALL be set to 1 when in STATE_PARTIAL_LOCKOUT
+- **AND** bit 7 SHALL be set to 0 when in STATE_LOCKED or STATE_READY
 
-#### Scenario: State sync in ready state
-- **WHEN** node requests state sync
-- **AND** game is in ready state
-- **THEN** the controller SHALL send LED_ON for all nodes
-- **AND** indicate no buzzers are locked or selected
-
-#### Scenario: State sync in locked state
+#### Scenario: State sync in locked state (MODIFIED)
 - **WHEN** node requests state sync
 - **AND** game is in locked state
-- **THEN** the controller SHALL send LED_BLINK for selected node
-- **AND** send LED_OFF for all other nodes
-- **AND** include selected buzzer ID in state message
+- **THEN** the controller SHALL send state sync with bit 7 = 0 (locked mode)
+- **AND** send selectedBuzzer ID in bits 4-6
+- **AND** send lockedBuzzers bitmask in bits 0-3 (may be 0x00)
+- **AND** the buzzer node will interpret: selected buzzer gets BLINK, all others get OFF
 
-#### Scenario: State sync in partial lockout
+#### Scenario: State sync in partial lockout (MODIFIED)
 - **WHEN** node requests state sync
 - **AND** game is in partial lockout state
-- **THEN** the controller SHALL send LED_BLINK for selected node
-- **AND** send LED_OFF for locked-out nodes
-- **AND** send LED_ON for remaining active nodes
-- **AND** include locked buzzer bitmask in state message
+- **THEN** the controller SHALL send state sync with bit 7 = 1 (partial lockout mode)
+- **AND** send selectedBuzzer ID in bits 4-6
+- **AND** send lockedBuzzers bitmask in bits 0-3
+- **AND** the buzzer node will interpret: selected gets BLINK, locked get OFF, others get ON
+
+#### Scenario: State sync in ready state (ADDED)
+- **WHEN** node requests state sync
+- **AND** game is in ready state
+- **THEN** the controller SHALL send state sync with bit 7 = 0
+- **AND** send selectedBuzzer = 0 in bits 4-6
+- **AND** send lockedBuzzers = 0x00 in bits 0-3
+- **AND** the buzzer node will interpret: all buzzers get ON
 
 ### Requirement: Reconnection Event Logging
 The main controller SHALL log connection status changes via USB Serial.

@@ -172,8 +172,11 @@ void sendStateSync(uint8_t nodeId) {
   // Pack game state into value field:
   // Bits 0-3: locked buzzers bitmask
   // Bits 4-6: selected buzzer (0-4)
-  // Bit 7: unused
+  // Bit 7: game state mode (0=LOCKED, 1=PARTIAL_LOCKOUT)
   msg.value = lockedBuzzers | (selectedBuzzer << 4);
+  if (currentState == STATE_PARTIAL_LOCKOUT) {
+    msg.value |= 0x80; // Set bit 7 for PARTIAL_LOCKOUT
+  }
 
   esp_now_send(buzzerMACs[nodeId - 1], (uint8_t*)&msg, sizeof(msg));
   
@@ -226,6 +229,11 @@ void handleBuzzerPress(uint8_t nodeId, uint32_t timestamp) {
 }
 
 void handleCorrectAnswer() {
+  if (selectedBuzzer == 0) {
+    Serial.println("No buzzer selected, ignoring CORRECT command");
+    return;
+  }
+
   Serial.println("CORRECT answer - resetting to READY");
   
   // Reset to ready state
