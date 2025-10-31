@@ -47,6 +47,10 @@ unsigned long lastHeartbeatTime = 0;
 unsigned long nodeLastSeen[NUM_BUZZERS] = {0, 0, 0, 0};
 bool nodeConnected[NUM_BUZZERS] = {false, false, false, false};
 
+// Serial command input
+char serialInputBuffer[SERIAL_INPUT_BUFFER_SIZE];
+int serialInputIndex = 0;
+
 // ============================================================================
 // SERIAL MESSAGE QUEUE
 // ============================================================================
@@ -361,6 +365,56 @@ void handleControlButtons() {
 }
 
 // ============================================================================
+// SERIAL COMMAND INPUT
+// ============================================================================
+
+void handleSerialInput() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    
+    // Handle newline characters (command terminator)
+    if (c == '\n' || c == '\r') {
+      // Only process if buffer has content
+      if (serialInputIndex > 0) {
+        // Null-terminate the command string
+        serialInputBuffer[serialInputIndex] = '\0';
+        
+        // Parse and execute the command
+        String command(serialInputBuffer);
+        command.trim(); // Remove any whitespace
+        
+        if (command == "CORRECT") {
+          Serial.println("CMD_ACK:CORRECT");
+          handleCorrectAnswer();
+        } else if (command == "WRONG") {
+          Serial.println("CMD_ACK:WRONG");
+          handleWrongAnswer();
+        } else if (command == "RESET") {
+          Serial.println("CMD_ACK:RESET");
+          handleFullReset();
+        } else if (command.length() > 0) {
+          // Unknown command
+          Serial.print("CMD_ERR:UNKNOWN:");
+          Serial.println(command);
+        }
+        
+        // Reset buffer for next command
+        serialInputIndex = 0;
+      }
+    } else {
+      // Add character to buffer if there's space
+      if (serialInputIndex < SERIAL_INPUT_BUFFER_SIZE - 1) {
+        serialInputBuffer[serialInputIndex++] = c;
+      } else {
+        // Buffer overflow - discard and report error
+        Serial.println("CMD_ERR:BUFFER_OVERFLOW");
+        serialInputIndex = 0;
+      }
+    }
+  }
+}
+
+// ============================================================================
 // SETUP AND MAIN LOOP
 // ============================================================================
 
@@ -447,6 +501,7 @@ void loop() {
   checkNodeTimeouts();
 
   handleControlButtons();
+  handleSerialInput();
   processMessageQueue();
   delay(1); // Small delay to prevent watchdog issues
 }

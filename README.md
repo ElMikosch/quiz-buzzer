@@ -67,20 +67,40 @@ screen /dev/ttyUSB0 115200
 
 ## PC Interface
 
+### Outbound Messages (Controller → PC)
+
 Messages sent over USB serial (newline-terminated):
 ```
 BUZZER:1      # Buzzer 1 pressed
 BUZZER:2      # Buzzer 2 pressed
 BUZZER:3      # Buzzer 3 pressed
 BUZZER:4      # Buzzer 4 pressed
-CORRECT       # Correct answer button
-WRONG         # Wrong answer button
-RESET         # Reset button
+CORRECT       # Correct answer button pressed
+WRONG         # Wrong answer button pressed
+RESET         # Reset button pressed
 DISCONNECT:2  # Buzzer 2 disconnected
 RECONNECT:2   # Buzzer 2 reconnected
 ```
 
-Example Python code:
+### Inbound Commands (PC → Controller)
+
+Send commands to control the game from your PC:
+```
+CORRECT\n     # Mark answer correct and reset game
+WRONG\n       # Mark answer wrong and lock out current buzzer
+RESET\n       # Full reset of game state
+```
+
+Command responses:
+```
+CMD_ACK:CORRECT           # Command acknowledged and executed
+CMD_ACK:WRONG             # Command acknowledged and executed
+CMD_ACK:RESET             # Command acknowledged and executed
+CMD_ERR:UNKNOWN:FOO       # Unknown command "FOO"
+CMD_ERR:BUFFER_OVERFLOW   # Input exceeded 256 bytes
+```
+
+### Example: Reading Messages
 ```python
 import serial
 ser = serial.Serial('/dev/ttyUSB0', 115200)
@@ -89,7 +109,45 @@ while True:
     if line.startswith('BUZZER:'):
         buzzer_id = int(line.split(':')[1])
         print(f"Buzzer {buzzer_id} pressed!")
+    elif line == 'CORRECT':
+        print("Correct answer!")
 ```
+
+### Example: Sending Commands
+```python
+import serial
+ser = serial.Serial('/dev/ttyUSB0', 115200)
+
+# Mark answer correct
+ser.write(b'CORRECT\n')
+response = ser.readline().decode().strip()
+print(response)  # CMD_ACK:CORRECT
+
+# Mark answer wrong
+ser.write(b'WRONG\n')
+response = ser.readline().decode().strip()
+print(response)  # CMD_ACK:WRONG
+
+# Reset game
+ser.write(b'RESET\n')
+response = ser.readline().decode().strip()
+print(response)  # CMD_ACK:RESET
+```
+
+### Using with Serial Terminal
+```bash
+# Linux/Mac - using screen
+screen /dev/ttyUSB0 115200
+# Type commands: CORRECT, WRONG, or RESET followed by Enter
+
+# Alternative - using echo
+echo "CORRECT" > /dev/ttyUSB0
+
+# Windows PowerShell
+"CORRECT`n" | Out-File -FilePath COM3 -Encoding ASCII -NoNewline
+```
+
+**Note**: Serial commands work identically to physical button presses and can be used concurrently.
 
 ## Project Structure
 

@@ -1,7 +1,7 @@
 # pc-interface Specification
 
 ## Purpose
-TBD - created by archiving change add-multi-board-buzzer-system. Update Purpose after archive.
+Defines the bidirectional USB serial communication protocol between the main controller and PC, including outbound game state messages and inbound control commands.
 ## Requirements
 ### Requirement: USB Serial Communication
 The main controller SHALL communicate with the PC via USB serial port using a text-based protocol.
@@ -138,6 +138,62 @@ The system SHALL provide serial messages compatible with quiz software or custom
 - **THEN** each message SHALL be on a separate line
 - **AND** be parseable by splitting on newline
 - **AND** be extractable using simple string matching
+
+### Requirement: Inbound Serial Commands
+The main controller SHALL accept control commands from the PC via serial port to trigger game state changes.
+
+#### Scenario: CORRECT command received
+- **WHEN** the PC sends "CORRECT\n" via serial port
+- **THEN** the main controller SHALL execute the correct answer action
+- **AND** respond with "CMD_ACK:CORRECT\n"
+- **AND** transition game state identically to pressing the physical CORRECT button
+- **AND** process the command within 10ms of receipt
+
+#### Scenario: WRONG command received
+- **WHEN** the PC sends "WRONG\n" via serial port
+- **THEN** the main controller SHALL execute the wrong answer action
+- **AND** respond with "CMD_ACK:WRONG\n"
+- **AND** transition game state identically to pressing the physical WRONG button
+- **AND** process the command within 10ms of receipt
+
+#### Scenario: RESET command received
+- **WHEN** the PC sends "RESET\n" via serial port
+- **THEN** the main controller SHALL execute the full reset action
+- **AND** respond with "CMD_ACK:RESET\n"
+- **AND** transition game state identically to pressing the physical RESET button
+- **AND** process the command within 10ms of receipt
+
+#### Scenario: Unknown command received
+- **WHEN** the PC sends an unrecognized command
+- **THEN** the main controller SHALL ignore the command
+- **AND** respond with "CMD_ERR:UNKNOWN:<command>\n"
+- **AND** NOT change game state
+- **AND** continue normal operation
+
+#### Scenario: Command with different line endings
+- **WHEN** the PC sends a command terminated with '\n', '\r', or '\r\n'
+- **THEN** the main controller SHALL accept all variations
+- **AND** parse the command correctly
+- **AND** execute the appropriate action
+
+#### Scenario: Buffer overflow protection
+- **WHEN** the PC sends data exceeding 256 bytes without a newline
+- **THEN** the main controller SHALL discard the buffer
+- **AND** send "CMD_ERR:BUFFER_OVERFLOW\n"
+- **AND** continue normal operation without crashing
+
+#### Scenario: Concurrent serial and button input
+- **WHEN** a serial command arrives while button inputs are active
+- **THEN** both input sources SHALL be processed correctly
+- **AND** neither SHALL be blocked
+- **AND** commands SHALL execute in the order received
+- **AND** the system SHALL remain responsive to both input methods
+
+#### Scenario: Serial command during different game states
+- **WHEN** serial commands are received in READY, LOCKED, or PARTIAL_LOCKOUT state
+- **THEN** commands SHALL execute with identical behavior to physical buttons
+- **AND** respect game state rules (e.g., WRONG requires selected buzzer)
+- **AND** produce the same LED patterns and state transitions
 
 ### Requirement: Diagnostic and Debug Output
 The system SHALL provide debug information via the same serial port without interfering with protocol messages.

@@ -15,9 +15,10 @@ enum MessageType : uint8_t {
 
 // LED states
 enum LEDState : uint8_t {
-  LED_OFF = 0,
-  LED_ON = 1,
-  LED_BLINK = 2
+  LED_OFF = 0,    // LED off (locked out or other buzzer selected)
+  LED_ON = 1,     // LED solid on (ready state, full brightness)
+  LED_BLINK = 2,  // Two-stage blink: 5Hz fast for 3s, then 2Hz slow (selected buzzer)
+  LED_FADE = 3    // Breathing fade effect for disconnected state (smooth in/out)
 };
 
 // ESP-NOW message structure

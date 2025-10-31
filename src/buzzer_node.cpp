@@ -24,6 +24,17 @@ LEDState savedLEDState = LED_OFF; // Save state before disconnection
 unsigned long lastBlinkTime = 0;
 bool blinkState = false;
 
+// LED fade variables for breathing effect
+// Breathing fade is used during disconnected state for smooth visual feedback
+uint8_t fadeBrightness = 0;        // Current brightness (0-255)
+int8_t fadeDirection = 1;          // 1 for fade-in, -1 for fade-out
+unsigned long lastFadeTime = 0;    // Last time fade was updated
+
+// Two-stage blink variables for pressed state
+// Fast blink (5Hz) for 3 seconds grabs attention, then slow blink (2Hz) continues
+unsigned long fastBlinkStartTime = 0;  // When fast blink phase started
+bool isInFastBlinkPhase = false;       // True if in 5Hz fast blink phase
+
 // Button state management
 bool lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
@@ -97,6 +108,9 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
     if (isSelected) {
       currentLEDState = LED_BLINK;
       lastBlinkTime = millis(); // Reset blink timer to start immediately
+      // Start two-stage blink: fast blink for 3 seconds, then slow
+      isInFastBlinkPhase = true;
+      fastBlinkStartTime = millis();
       Serial.println("  -> LED state: BLINK (selected)");
     } else if (isLocked) {
       currentLEDState = LED_OFF;
@@ -118,14 +132,23 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
     Serial.print("LED command received: ");
     Serial.println(msg.value);
 
-    // If switching to non-blink state, ensure LED is in correct state
-    // immediately
+    // Handle state-specific initialization
     if (currentLEDState == LED_ON) {
-      digitalWrite(BUZZER_LED_PIN, HIGH);
+      ledcWrite(LED_PWM_CHANNEL, 255);  // Full brightness
       blinkState = true;
     } else if (currentLEDState == LED_OFF) {
-      digitalWrite(BUZZER_LED_PIN, LOW);
+      ledcWrite(LED_PWM_CHANNEL, 0);  // Off
       blinkState = false;
+    } else if (currentLEDState == LED_BLINK) {
+      // Start two-stage blink pattern
+      isInFastBlinkPhase = true;
+      fastBlinkStartTime = millis();
+      lastBlinkTime = millis();
+    } else if (currentLEDState == LED_FADE) {
+      // Initialize fade state
+      fadeBrightness = 0;
+      fadeDirection = 1;
+      lastFadeTime = millis();
     }
   }
 }
@@ -200,9 +223,11 @@ void checkConnection() {
     // Save current LED state before entering disconnected mode
     savedLEDState = currentLEDState;
     
-    // Enter rapid blink mode to indicate disconnection
-    currentLEDState = LED_BLINK;
-    lastBlinkTime = now; // Reset blink timer
+    // Enter breathing fade mode to indicate disconnection
+    currentLEDState = LED_FADE;
+    fadeBrightness = 0;
+    fadeDirection = 1;
+    lastFadeTime = now;
   }
 }
 
@@ -210,25 +235,76 @@ void checkConnection() {
 // LED HANDLING
 // ============================================================================
 
+// Smooth breathing fade effect for disconnected state
+// Uses PWM to gradually fade brightness in and out
+void handleLEDFade() {
+  unsigned long now = millis();
+  
+  // Update fade brightness at configured interval
+  if (now - lastFadeTime >= FADE_INTERVAL_MS) {
+    lastFadeTime = now;
+    
+    // Update brightness based on fade direction
+    fadeBrightness += (fadeDirection * FADE_STEP);
+    
+    // Reverse direction at brightness limits
+    if (fadeBrightness <= 0) {
+      fadeBrightness = 0;
+      fadeDirection = 1;  // Start fading in
+    } else if (fadeBrightness >= 255) {
+      fadeBrightness = 255;
+      fadeDirection = -1;  // Start fading out
+    }
+    
+    // Apply brightness using PWM
+    ledcWrite(LED_PWM_CHANNEL, fadeBrightness);
+  }
+}
+
 void handleLED() {
   unsigned long now = millis();
-  unsigned long blinkInterval = isConnected ? BLINK_INTERVAL_MS : DISCONNECT_BLINK_INTERVAL_MS;
   
   switch (currentLEDState) {
   case LED_ON:
-    digitalWrite(BUZZER_LED_PIN, HIGH);
+    // Solid on at full brightness using PWM
+    ledcWrite(LED_PWM_CHANNEL, 255);
     break;
 
   case LED_OFF:
-    digitalWrite(BUZZER_LED_PIN, LOW);
+    // Off (zero brightness) using PWM
+    ledcWrite(LED_PWM_CHANNEL, 0);
+    break;
+
+  case LED_FADE:
+    // Breathing fade effect (for disconnected state)
+    handleLEDFade();
     break;
 
   case LED_BLINK:
-    // Non-blocking blink using timer
-    // Fast blink when disconnected, slow blink when connected
+    // Two-stage blink pattern: 5Hz fast for 3 seconds, then 2Hz slow
+    unsigned long blinkInterval;
+    
+    // Determine if we're in fast blink phase or slow blink phase
+    if (isInFastBlinkPhase) {
+      unsigned long elapsedTime = now - fastBlinkStartTime;
+      
+      if (elapsedTime >= FAST_BLINK_DURATION_MS) {
+        // Transition to slow blink phase
+        isInFastBlinkPhase = false;
+        blinkInterval = BLINK_INTERVAL_MS;  // 2Hz (500ms)
+      } else {
+        // Stay in fast blink phase
+        blinkInterval = FAST_BLINK_INTERVAL_MS;  // 5Hz (100ms)
+      }
+    } else {
+      // Normal slow blink
+      blinkInterval = BLINK_INTERVAL_MS;  // 2Hz (500ms)
+    }
+    
+    // Execute non-blocking blink using PWM
     if (now - lastBlinkTime >= blinkInterval) {
       blinkState = !blinkState;
-      digitalWrite(BUZZER_LED_PIN, blinkState ? HIGH : LOW);
+      ledcWrite(LED_PWM_CHANNEL, blinkState ? 255 : 0);
       lastBlinkTime = now;
     }
     break;
@@ -253,6 +329,12 @@ void setup() {
   pinMode(BUZZER_BUTTON_PIN, INPUT_PULLUP);
   pinMode(BUZZER_LED_PIN, OUTPUT);
   digitalWrite(BUZZER_LED_PIN, LOW);
+
+  // Initialize PWM/LEDC for smooth LED control
+  ledcSetup(LED_PWM_CHANNEL, LED_PWM_FREQUENCY, LED_PWM_RESOLUTION);
+  ledcAttachPin(BUZZER_LED_PIN, LED_PWM_CHANNEL);
+  ledcWrite(LED_PWM_CHANNEL, 0); // Start with LED off
+  Serial.println("✓ PWM/LEDC initialized for LED control");
 
   // Set custom MAC address
   WiFi.mode(WIFI_STA);
@@ -296,10 +378,12 @@ void setup() {
   }
   Serial.println("✓ Main controller added as peer");
 
-  // Initial LED state: BLINK (rapid blink while disconnected/connecting)
-  currentLEDState = LED_BLINK;
+  // Initial LED state: breathing fade (disconnected until first heartbeat)
+  currentLEDState = LED_FADE;
   savedLEDState = LED_OFF;
-  lastBlinkTime = millis();
+  fadeBrightness = 0;
+  fadeDirection = 1;
+  lastFadeTime = millis();
 
   // Initialize connection state (start as disconnected, will connect on first heartbeat)
   isConnected = false;

@@ -4,8 +4,8 @@
 
 | Function | GPIO Pin | Mode | Notes |
 |----------|----------|------|-------|
-| Button Input | 12 | INPUT_PULLUP | Buzzer button, active LOW |
-| LED Output | 13 | OUTPUT | Status LED (solid/blink/off) |
+| Button Input | 12 | INPUT_PULLUP | Buzzer button, active LOW, white |
+| LED Output | 13 | OUTPUT | Status LED (solid/blink/off), red |
 | Speaker (reserved) | 14 | Not implemented | Reserved for future audio feedback |
 
 ## Main Controller Pins (1 board)
