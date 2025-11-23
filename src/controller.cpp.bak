@@ -129,9 +129,8 @@ void broadcastMessage(const String& serialMsg, const String& jsonMsg) {
 #ifdef ENABLE_WEBSOCKET
   // Send to WebSocket clients if available
   if (webSocketServer != nullptr && currentWiFiMode == STATION_MODE) {
-    String msg = jsonMsg; // Create mutable copy for sendTXT
     for (uint8_t i = 0; i < numConnectedClients; i++) {
-      if (!webSocketServer->sendTXT(connectedClients[i], msg)) {
+      if (!webSocketServer->sendTXT(connectedClients[i], jsonMsg)) {
         Serial.print("DEBUG: WS: Failed to send to client ");
         Serial.println(connectedClients[i]);
       }
@@ -1062,7 +1061,7 @@ void broadcastHeartbeat() {
   BuzzerMessage msg;
   msg.node_id = 0; // 0 = broadcast from controller
   msg.msg_type = MSG_HEARTBEAT;
-  msg.value = WiFi.channel(); // Include current WiFi channel for buzzer synchronization
+  msg.value = 0;
   msg.timestamp = millis();
 
   // Send to each buzzer individually (more reliable than broadcast)
@@ -1363,67 +1362,6 @@ void handleSerialInput() {
 }
 
 // ============================================================================
-// ESP-NOW CHANNEL SYNCHRONIZATION
-// ============================================================================
-
-// Synchronize ESP-NOW peer channels to match current WiFi channel
-// This must be called AFTER ESP-NOW initialization and peer addition
-void syncESPNowChannels() {
-  uint8_t currentChannel = WiFi.channel();
-  
-  Serial.println("========================================");
-  Serial.print("Syncing ESP-NOW peer channels to WiFi channel ");
-  Serial.println(currentChannel);
-  Serial.println("========================================");
-  
-  // Get list of all peers
-  esp_now_peer_info_t peer;
-  esp_now_peer_num_t peerNum;
-  esp_now_get_peer_num(&peerNum);
-  
-  Serial.print("Found ");
-  Serial.print(peerNum.total_num);
-  Serial.println(" ESP-NOW peers");
-  
-  // For each peer, remove and re-add with correct channel
-  for (int i = 0; i < peerNum.total_num; i++) {
-    if (esp_now_fetch_peer(true, &peer) == ESP_OK) {
-      uint8_t *mac = peer.peer_addr;
-      
-      Serial.print("  Updating peer: ");
-      Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      Serial.print(" (old channel: ");
-      Serial.print(peer.channel);
-      Serial.print(" -> new channel: ");
-      Serial.print(currentChannel);
-      Serial.println(")");
-      
-      // Remove peer
-      esp_err_t removeResult = esp_now_del_peer(mac);
-      if (removeResult != ESP_OK) {
-        Serial.print("    ✗ Failed to remove peer: ");
-        Serial.println(removeResult);
-        continue;
-      }
-      
-      // Update channel and re-add
-      peer.channel = currentChannel;
-      esp_err_t addResult = esp_now_add_peer(&peer);
-      if (addResult == ESP_OK) {
-        Serial.println("    ✓ Peer updated successfully");
-      } else {
-        Serial.print("    ✗ Failed to re-add peer: ");
-        Serial.println(addResult);
-      }
-    }
-  }
-  
-  Serial.println("========================================");
-  Serial.println("ESP-NOW channel sync complete");
-  Serial.println("========================================");
-}
-
-// ============================================================================
 // SETUP AND MAIN LOOP
 // ============================================================================
 
@@ -1510,13 +1448,6 @@ void setup() {
       Serial.println(" added as peer");
     }
   }
-
-#ifdef ENABLE_WEBSOCKET
-  // Sync ESP-NOW peer channels to match WiFi channel (when in Station Mode)
-  if (WiFi.getMode() == WIFI_MODE_STA || WiFi.getMode() == WIFI_MODE_APSTA) {
-    syncESPNowChannels();
-  }
-#endif
 
   Serial.println("========================================");
   Serial.println("Main controller ready!");

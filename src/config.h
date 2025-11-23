@@ -64,4 +64,44 @@
 
 #define NUM_BUZZERS 4 // Total number of buzzer nodes
 
+// ============================================================================
+// WIFI CONFIGURATION
+// ============================================================================
+
+// WiFi Setup Mode (AP for initial configuration)
+#define WIFI_SETUP_SSID "QuizBuzzer-Setup"  // Open network for first-time setup
+#define WIFI_SETUP_PASSWORD ""              // No password for easy setup access
+
+// WiFi AP Mode Configuration
+#define WIFI_AP_IP "192.168.4.1"            // Static IP for AP mode
+#define WIFI_AP_GATEWAY "192.168.4.1"
+#define WIFI_AP_SUBNET "255.255.255.0"
+#define WIFI_AP_CHANNEL 1                   // Must match ESP-NOW channel
+
+// WiFi Connection Timeouts
+#define WIFI_CONNECT_TIMEOUT_MS 30000       // 30 seconds to connect in Station mode
+#define WIFI_RECONNECT_INTERVAL_MS 5000     // Check connection every 5 seconds
+#define WIFI_RESET_BUTTON_HOLD_MS 3000      // Hold RESET button for 3 seconds to clear WiFi
+
+// mDNS Configuration
+#define MDNS_HOSTNAME "quizbuzzer"          // Accessible as quizbuzzer.local
+
+// ============================================================================
+// WEBSOCKET CONFIGURATION
+// ============================================================================
+
+#define WEBSOCKET_PORT 8080                 // WebSocket server port
+#define WEBSOCKET_MAX_CLIENTS 4             // Maximum concurrent WebSocket connections
+#define WEBSOCKET_PING_INTERVAL_MS 5000     // Send ping every 5 seconds
+#define WEBSOCKET_PONG_TIMEOUT_MS 2000      // Expect pong within 2 seconds
+#define WEBSOCKET_MESSAGE_BUFFER_SIZE 10    // Max queued messages per client
+
+// HTTP Server Configuration (for config portal)
+#define HTTP_PORT 80                        // HTTP server for captive portal
+
+// Build flag to disable WebSocket feature
+#ifndef DISABLE_WEBSOCKET
+  #define ENABLE_WEBSOCKET 1
+#endif
+
 #endif // CONFIG_H

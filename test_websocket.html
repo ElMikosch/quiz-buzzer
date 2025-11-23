@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quiz Buzzer WebSocket Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .connection {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .connection input {
+            width: 400px;
+            padding: 8px;
+            margin-right: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .connect-btn {
+            background: #28a745;
+            color: white;
+        }
+        .connect-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .disconnect-btn {
+            background: #dc3545;
+            color: white;
+        }
+        .control-btn {
+            background: #007bff;
+            color: white;
+            margin: 10px 5px;
+        }
+        .control-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .log {
+            height: 300px;
+            overflow-y: auto;
+            background: #282c34;
+            color: #abb2bf;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-left: 3px solid transparent;
+        }
+        .log-entry.received {
+            border-left-color: #61afef;
+            color: #98c379;
+        }
+        .log-entry.sent {
+            border-left-color: #e5c07b;
+            color: #e5c07b;
+        }
+        .log-entry.error {
+            border-left-color: #e06c75;
+            color: #e06c75;
+        }
+        .log-entry.info {
+            border-left-color: #c678dd;
+            color: #c678dd;
+        }
+        .timestamp {
+            color: #5c6370;
+            font-size: 11px;
+        }
+        .state-display {
+            margin: 20px 0;
+            padding: 15px;
+            background: #e7f3ff;
+            border-radius: 5px;
+            border: 2px solid #007bff;
+        }
+        .state-display h3 {
+            margin-top: 0;
+            color: #0056b3;
+        }
+        .buzzer-states {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .buzzer-indicator {
+            flex: 1;
+            padding: 15px;
+            text-align: center;
+            border-radius: 5px;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        .buzzer-indicator.ready {
+            background: #28a745;
+            color: white;
+        }
+        .buzzer-indicator.selected {
+            background: #ffc107;
+            color: black;
+            animation: pulse 0.5s infinite;
+        }
+        .buzzer-indicator.locked {
+            background: #dc3545;
+            color: white;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Quiz Buzzer WebSocket Test</h1>
+        
+        <div class="connection">
+            <label for="wsUrl">WebSocket URL:</label><br>
+            <input type="text" id="wsUrl" value="ws://quizbuzzer.local:8080" placeholder="ws://quizbuzzer.local:8080">
+            <button class="connect-btn" id="connectBtn" onclick="connect()">Connect</button>
+            <button class="disconnect-btn" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+        </div>
+
+        <div class="status disconnected" id="status">
+            Disconnected
+        </div>
+
+        <div class="state-display" id="stateDisplay" style="display: none;">
+            <h3>Current Game State</h3>
+            <div><strong>Selected Buzzer:</strong> <span id="selectedBuzzer">None</span></div>
+            <div><strong>Locked Buzzers:</strong> <span id="lockedBuzzers">None</span></div>
+            <div class="buzzer-states">
+                <div class="buzzer-indicator ready" id="buzzer1">Buzzer 1<br>Ready</div>
+                <div class="buzzer-indicator ready" id="buzzer2">Buzzer 2<br>Ready</div>
+                <div class="buzzer-indicator ready" id="buzzer3">Buzzer 3<br>Ready</div>
+                <div class="buzzer-indicator ready" id="buzzer4">Buzzer 4<br>Ready</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <h3>Game Controls</h3>
+            <button class="control-btn" id="correctBtn" onclick="sendCommand('correct')" disabled>✓ Mark Correct</button>
+            <button class="control-btn" id="wrongBtn" onclick="sendCommand('wrong')" disabled>✗ Mark Wrong</button>
+            <button class="control-btn" id="resetBtn" onclick="sendCommand('reset')" disabled>↻ Reset Game</button>
+            <button class="control-btn" id="getStateBtn" onclick="sendCommand('getState')" disabled>📊 Get State</button>
+        </div>
+
+        <h3>Message Log</h3>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let gameState = {
+            selected: 0,
+            locked: []
+        };
+
+        function getTimestamp() {
+            const now = new Date();
+            return now.toLocaleTimeString() + '.' + now.getMilliseconds().toString().padStart(3, '0');
+        }
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `<span class="timestamp">[${getTimestamp()}]</span> ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(text, className) {
+            const status = document.getElementById('status');
+            status.textContent = text;
+            status.className = `status ${className}`;
+        }
+
+        function updateButtons(enabled) {
+            document.getElementById('connectBtn').disabled = enabled;
+            document.getElementById('disconnectBtn').disabled = !enabled;
+            document.getElementById('correctBtn').disabled = !enabled;
+            document.getElementById('wrongBtn').disabled = !enabled;
+            document.getElementById('resetBtn').disabled = !enabled;
+            document.getElementById('getStateBtn').disabled = !enabled;
+        }
+
+        function updateGameStateDisplay() {
+            document.getElementById('stateDisplay').style.display = 'block';
+            document.getElementById('selectedBuzzer').textContent = gameState.selected === 0 ? 'None' : `Buzzer ${gameState.selected}`;
+            document.getElementById('lockedBuzzers').textContent = gameState.locked.length === 0 ? 'None' : gameState.locked.map(id => `Buzzer ${id}`).join(', ');
+
+            // Update buzzer indicators
+            for (let i = 1; i <= 4; i++) {
+                const buzzer = document.getElementById(`buzzer${i}`);
+                if (gameState.selected === i) {
+                    buzzer.className = 'buzzer-indicator selected';
+                    buzzer.innerHTML = `Buzzer ${i}<br>SELECTED`;
+                } else if (gameState.locked.includes(i)) {
+                    buzzer.className = 'buzzer-indicator locked';
+                    buzzer.innerHTML = `Buzzer ${i}<br>Locked`;
+                } else {
+                    buzzer.className = 'buzzer-indicator ready';
+                    buzzer.innerHTML = `Buzzer ${i}<br>Ready`;
+                }
+            }
+        }
+
+        function connect() {
+            const url = document.getElementById('wsUrl').value;
+            log(`Connecting to ${url}...`, 'info');
+            updateStatus('Connecting...', 'connecting');
+
+            try {
+                ws = new WebSocket(url);
+
+                ws.onopen = () => {
+                    log('✓ Connected to Quiz Buzzer!', 'info');
+                    updateStatus('Connected', 'connected');
+                    updateButtons(true);
+                    
+                    // Request initial state
+                    sendCommand('getState');
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        log(`← ${JSON.stringify(msg, null, 2)}`, 'received');
+
+                        // Handle different message types
+                        switch(msg.type) {
+                            case 'state':
+                                gameState.selected = msg.selected;
+                                gameState.locked = msg.locked || [];
+                                updateGameStateDisplay();
+                                break;
+                            case 'buzzer':
+                                log(`🔔 Buzzer ${msg.id} pressed!`, 'info');
+                                gameState.selected = msg.id;
+                                updateGameStateDisplay();
+                                break;
+                            case 'correct':
+                                log('✓ Answer marked correct!', 'info');
+                                gameState.selected = 0;
+                                gameState.locked = [];
+                                updateGameStateDisplay();
+                                break;
+                            case 'wrong':
+                                log('✗ Answer marked wrong!', 'info');
+                                if (gameState.selected > 0 && !gameState.locked.includes(gameState.selected)) {
+                                    gameState.locked.push(gameState.selected);
+                                }
+                                gameState.selected = 0;
+                                updateGameStateDisplay();
+                                break;
+                            case 'reset':
+                                log('↻ Game reset!', 'info');
+                                gameState.selected = 0;
+                                gameState.locked = [];
+                                updateGameStateDisplay();
+                                break;
+                            case 'disconnect':
+                                log(`⚠ Buzzer ${msg.id} disconnected!`, 'error');
+                                break;
+                            case 'reconnect':
+                                log(`✓ Buzzer ${msg.id} reconnected!`, 'info');
+                                break;
+                        }
+                    } catch (e) {
+                        log(`Error parsing message: ${e.message}`, 'error');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`✗ WebSocket error: ${error}`, 'error');
+                };
+
+                ws.onclose = () => {
+                    log('✗ Disconnected from Quiz Buzzer', 'info');
+                    updateStatus('Disconnected', 'disconnected');
+                    updateButtons(false);
+                    document.getElementById('stateDisplay').style.display = 'none';
+                    ws = null;
+                };
+
+            } catch (e) {
+                log(`✗ Connection failed: ${e.message}`, 'error');
+                updateStatus('Connection Failed', 'disconnected');
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendCommand(command) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('✗ Not connected!', 'error');
+                return;
+            }
+
+            const cmd = { command: command };
+            ws.send(JSON.stringify(cmd));
+            log(`→ ${JSON.stringify(cmd)}`, 'sent');
+        }
+
+        // Quick connection presets
+        document.getElementById('wsUrl').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                connect();
+            }
+        });
+
+        log('Quiz Buzzer WebSocket Test ready. Enter URL and click Connect.', 'info');
+    </script>
+</body>
+</html>

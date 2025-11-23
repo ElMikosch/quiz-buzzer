@@ -26,6 +26,7 @@ struct BuzzerMessage {
   uint8_t node_id;      // 1-4 for buzzer nodes
   uint8_t msg_type;     // MessageType enum
   uint8_t value;        // LED state or press count
+                        // For MSG_HEARTBEAT: WiFi channel number (1-14) for buzzer synchronization
                         // For MSG_STATE_SYNC: bits 0-3 = locked buzzers bitmask
                         //                     bits 4-6 = selected buzzer (0-4)
                         //                     bit 7    = game state mode (0=LOCKED, 1=PARTIAL_LOCKOUT)

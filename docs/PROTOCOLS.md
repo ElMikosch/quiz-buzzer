@@ -186,3 +186,503 @@ The main controller maintains a queue of up to 10 messages to handle rapid event
 ### Debug Output
 
 Additional debug messages may appear on the serial port (e.g., "Buzzer node ready!", "ERROR: ..."). Quiz software should filter these by looking for the defined message patterns.
+
+---
+
+## WebSocket Protocol (Main Controller → PC/Mobile Clients)
+
+The main controller provides a WebSocket server for bidirectional JSON-based communication over WiFi. This is the recommended protocol for modern applications, especially mobile and web-based quiz software.
+
+### Connection Details
+
+- **Port**: 8080 (TCP)
+- **Protocol**: WebSocket (RFC 6455)
+- **Format**: JSON messages
+- **Discovery**: mDNS hostname `quizbuzzer.local` (when in Station Mode)
+- **Max Clients**: 4 concurrent connections
+- **Heartbeat**: Ping every 5 seconds, timeout after 2 seconds without pong
+
+### Connection URLs
+
+**Station Mode** (connected to your WiFi network):
+```
+ws://quizbuzzer.local:8080
+ws://<assigned-ip>:8080
+```
+
+**Setup Mode** (QuizBuzzer-Setup AP):
+```
+ws://192.168.4.1:8080
+```
+
+### Outbound Messages (Controller → Client)
+
+All messages are broadcast to all connected WebSocket clients simultaneously. Each message includes a `timestamp` field with `millis()` value for event ordering.
+
+#### Buzzer Press Event
+```json
+{
+  "type": "buzzer",
+  "id": 2,
+  "timestamp": 12345
+}
+```
+
+#### Correct Answer Event
+```json
+{
+  "type": "correct",
+  "timestamp": 12350
+}
+```
+
+#### Wrong Answer Event
+```json
+{
+  "type": "wrong",
+  "timestamp": 12355
+}
+```
+
+#### Reset Event
+```json
+{
+  "type": "reset",
+  "timestamp": 12360
+}
+```
+
+#### Buzzer Disconnect Event
+```json
+{
+  "type": "disconnect",
+  "id": 3,
+  "timestamp": 12365
+}
+```
+
+#### Buzzer Reconnect Event
+```json
+{
+  "type": "reconnect",
+  "id": 3,
+  "timestamp": 12370
+}
+```
+
+#### State Synchronization Message
+Sent immediately when a client connects, and whenever requested via `getState` command.
+
+```json
+{
+  "type": "state",
+  "selected": 2,
+  "locked": [1, 4],
+  "timestamp": 12375
+}
+```
+
+Fields:
+- `selected`: Currently selected buzzer (0 = none, 1-4 = buzzer ID)
+- `locked`: Array of locked-out buzzer IDs
+- `timestamp`: Current system time in milliseconds
+
+### Inbound Commands (Client → Controller)
+
+Clients send JSON commands to control the game state. Commands are processed identically to physical button presses and USB serial commands.
+
+#### Mark Answer Correct
+```json
+{
+  "command": "correct"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "ack",
+  "command": "correct",
+  "timestamp": 12380
+}
+```
+
+**Behavior:** Resets game to ready state (all LEDs on, no lockouts)
+
+#### Mark Answer Wrong
+```json
+{
+  "command": "wrong"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "ack",
+  "command": "wrong",
+  "timestamp": 12385
+}
+```
+
+**Behavior:** Locks out currently selected buzzer, returns to ready state for others
+
+#### Reset Game
+```json
+{
+  "command": "reset"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "ack",
+  "command": "reset",
+  "timestamp": 12390
+}
+```
+
+**Behavior:** Full reset (clears lockouts, returns all buzzers to ready state)
+
+#### Query Current State
+```json
+{
+  "command": "getState"
+}
+```
+
+**Response:** (State message as shown above)
+```json
+{
+  "type": "state",
+  "selected": 0,
+  "locked": [],
+  "timestamp": 12395
+}
+```
+
+#### Error Response
+Sent when command is invalid or malformed:
+```json
+{
+  "status": "error",
+  "message": "Invalid command format"
+}
+```
+
+### Connection Management
+
+**Heartbeat**: The server sends WebSocket ping frames every 5 seconds. Clients must respond with pong frames within 2 seconds to maintain the connection.
+
+**Auto-Disconnect**: Clients that fail to respond to ping are automatically disconnected after timeout.
+
+**Reconnection**: Clients can reconnect at any time. Upon connection, they immediately receive a state sync message with the current game state.
+
+### JavaScript Example
+
+```javascript
+const ws = new WebSocket('ws://quizbuzzer.local:8080');
+
+ws.onopen = () => {
+  console.log('Connected to quiz buzzer');
+  
+  // Request current state
+  ws.send(JSON.stringify({ command: 'getState' }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  
+  switch(msg.type) {
+    case 'state':
+      console.log(`Selected: ${msg.selected}, Locked: ${msg.locked}`);
+      break;
+    case 'buzzer':
+      console.log(`Buzzer ${msg.id} pressed!`);
+      break;
+    case 'correct':
+      console.log('Correct answer!');
+      break;
+    case 'wrong':
+      console.log('Wrong answer!');
+      break;
+    case 'reset':
+      console.log('Game reset');
+      break;
+    case 'disconnect':
+      console.log(`Buzzer ${msg.id} disconnected`);
+      break;
+    case 'reconnect':
+      console.log(`Buzzer ${msg.id} reconnected`);
+      break;
+  }
+};
+
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+ws.onclose = () => {
+  console.log('Disconnected from quiz buzzer');
+  // Implement auto-reconnect logic here
+};
+
+// Send commands
+function markCorrect() {
+  ws.send(JSON.stringify({ command: 'correct' }));
+}
+
+function markWrong() {
+  ws.send(JSON.stringify({ command: 'wrong' }));
+}
+
+function resetGame() {
+  ws.send(JSON.stringify({ command: 'reset' }));
+}
+```
+
+### Python Example (websocket-client library)
+
+```python
+import websocket
+import json
+
+def on_message(ws, message):
+    msg = json.loads(message)
+    msg_type = msg.get('type')
+    
+    if msg_type == 'state':
+        print(f"State - Selected: {msg['selected']}, Locked: {msg['locked']}")
+    elif msg_type == 'buzzer':
+        print(f"Buzzer {msg['id']} pressed!")
+    elif msg_type == 'correct':
+        print("Correct answer!")
+    elif msg_type == 'wrong':
+        print("Wrong answer!")
+    elif msg_type == 'reset':
+        print("Game reset")
+    elif msg_type == 'disconnect':
+        print(f"Buzzer {msg['id']} disconnected")
+    elif msg_type == 'reconnect':
+        print(f"Buzzer {msg['id']} reconnected")
+
+def on_open(ws):
+    print("Connected to quiz buzzer")
+    # Request current state
+    ws.send(json.dumps({"command": "getState"}))
+
+def on_error(ws, error):
+    print(f"Error: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print("Disconnected from quiz buzzer")
+
+# Connect to controller
+ws = websocket.WebSocketApp(
+    "ws://quizbuzzer.local:8080",
+    on_open=on_open,
+    on_message=on_message,
+    on_error=on_error,
+    on_close=on_close
+)
+
+ws.run_forever()
+
+# In another thread, send commands:
+# ws.send(json.dumps({"command": "correct"}))
+# ws.send(json.dumps({"command": "wrong"}))
+# ws.send(json.dumps({"command": "reset"}))
+```
+
+### Godot GDScript Example (with Auto-Reconnect)
+
+```gdscript
+extends Node
+
+# WebSocket client for Quiz Buzzer system
+var socket = WebSocketPeer.new()
+var connection_url = "ws://quizbuzzer.local:8080"
+var is_connected = false
+var reconnect_timer = 0.0
+const RECONNECT_INTERVAL = 3.0  # Try reconnecting every 3 seconds
+
+# Game state tracking
+var selected_buzzer = 0
+var locked_buzzers = []
+
+# Signals for game events
+signal buzzer_pressed(id)
+signal correct_answer()
+signal wrong_answer()
+signal game_reset()
+signal state_updated(selected, locked)
+signal buzzer_disconnected(id)
+signal buzzer_reconnected(id)
+
+func _ready():
+	connect_to_server()
+
+func _process(delta):
+	socket.poll()
+	
+	var state = socket.get_ready_state()
+	
+	if state == WebSocketPeer.STATE_OPEN:
+		if not is_connected:
+			is_connected = true
+			print("✓ Connected to Quiz Buzzer!")
+			request_state()
+		
+		# Process incoming messages
+		while socket.get_available_packet_count() > 0:
+			var packet = socket.get_packet()
+			var json_string = packet.get_string_from_utf8()
+			var json = JSON.new()
+			var parse_result = json.parse(json_string)
+			
+			if parse_result == OK:
+				handle_message(json.data)
+			else:
+				print("JSON parse error: ", json.get_error_message())
+	
+	elif state == WebSocketPeer.STATE_CLOSED:
+		if is_connected:
+			print("✗ Disconnected from Quiz Buzzer")
+			is_connected = false
+		
+		# Auto-reconnect logic
+		reconnect_timer += delta
+		if reconnect_timer >= RECONNECT_INTERVAL:
+			reconnect_timer = 0.0
+			connect_to_server()
+
+func connect_to_server():
+	print("Connecting to ", connection_url, "...")
+	var err = socket.connect_to_url(connection_url)
+	if err != OK:
+		print("Connection error: ", err)
+
+func handle_message(data: Dictionary):
+	var msg_type = data.get("type", "")
+	
+	match msg_type:
+		"state":
+			selected_buzzer = data.get("selected", 0)
+			locked_buzzers = data.get("locked", [])
+			print("State sync - Selected: ", selected_buzzer, ", Locked: ", locked_buzzers)
+			emit_signal("state_updated", selected_buzzer, locked_buzzers)
+		
+		"buzzer":
+			var id = data.get("id", 0)
+			print("Buzzer ", id, " pressed!")
+			selected_buzzer = id
+			emit_signal("buzzer_pressed", id)
+		
+		"correct":
+			print("Answer marked correct!")
+			selected_buzzer = 0
+			locked_buzzers = []
+			emit_signal("correct_answer")
+		
+		"wrong":
+			print("Answer marked wrong!")
+			if selected_buzzer > 0 and not selected_buzzer in locked_buzzers:
+				locked_buzzers.append(selected_buzzer)
+			selected_buzzer = 0
+			emit_signal("wrong_answer")
+		
+		"reset":
+			print("Game reset!")
+			selected_buzzer = 0
+			locked_buzzers = []
+			emit_signal("game_reset")
+		
+		"disconnect":
+			var id = data.get("id", 0)
+			print("Buzzer ", id, " disconnected!")
+			emit_signal("buzzer_disconnected", id)
+		
+		"reconnect":
+			var id = data.get("id", 0)
+			print("Buzzer ", id, " reconnected!")
+			emit_signal("buzzer_reconnected", id)
+
+func send_command(command: String):
+	if not is_connected:
+		print("Cannot send command - not connected")
+		return
+	
+	var data = {"command": command}
+	var json_string = JSON.stringify(data)
+	socket.send_text(json_string)
+	print("Sent command: ", command)
+
+# Public API for controlling the game
+func mark_correct():
+	send_command("correct")
+
+func mark_wrong():
+	send_command("wrong")
+
+func reset_game():
+	send_command("reset")
+
+func request_state():
+	send_command("getState")
+```
+
+**Usage in Your Game:**
+
+```gdscript
+# In your main scene
+extends Node2D
+
+@onready var buzzer_client = $QuizBuzzerClient
+
+func _ready():
+	# Connect to signals
+	buzzer_client.buzzer_pressed.connect(_on_buzzer_pressed)
+	buzzer_client.correct_answer.connect(_on_correct_answer)
+	buzzer_client.wrong_answer.connect(_on_wrong_answer)
+	buzzer_client.game_reset.connect(_on_game_reset)
+	buzzer_client.state_updated.connect(_on_state_updated)
+
+func _on_buzzer_pressed(id):
+	print("Player ", id, " buzzed in!")
+	# Update UI, play sound, etc.
+
+func _on_correct_answer():
+	print("Correct! Moving to next question...")
+	# Award points, advance game state
+
+func _on_wrong_answer():
+	print("Wrong answer, player locked out")
+	# Update UI to show locked players
+
+func _on_game_reset():
+	print("Game reset by host")
+	# Reset UI, clear selections
+
+func _on_state_updated(selected, locked):
+	print("Game state: Selected=", selected, " Locked=", locked)
+	# Update UI to match current state
+
+# Call these when host presses buttons
+func _on_correct_button_pressed():
+	buzzer_client.mark_correct()
+
+func _on_wrong_button_pressed():
+	buzzer_client.mark_wrong()
+
+func _on_reset_button_pressed():
+	buzzer_client.reset_game()
+```
+
+### Dual-Interface Operation
+
+The WebSocket and USB Serial interfaces operate concurrently:
+- Events are broadcast to **both** interfaces simultaneously
+- Commands from either interface have identical effects
+- No interference between interfaces
+- USB Serial remains unchanged for backward compatibility

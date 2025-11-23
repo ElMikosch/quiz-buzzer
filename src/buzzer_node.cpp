@@ -65,6 +65,17 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
     bool wasConnected = isConnected;
     lastHeartbeatTime = now;
     
+    // Sync WiFi channel with controller (msg.value contains the channel number)
+    uint8_t controllerChannel = msg.value;
+    uint8_t currentChannel = WiFi.channel();
+    if (controllerChannel > 0 && controllerChannel != currentChannel) {
+      Serial.print("Syncing WiFi channel from ");
+      Serial.print(currentChannel);
+      Serial.print(" to ");
+      Serial.println(controllerChannel);
+      esp_wifi_set_channel(controllerChannel, WIFI_SECOND_CHAN_NONE);
+    }
+    
     if (!wasConnected) {
       // We just reconnected
       Serial.println("Connected to controller");
@@ -383,7 +394,7 @@ void setup() {
   // Add main controller as peer
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, mainControllerMAC, 6);
-  peerInfo.channel = ESPNOW_CHANNEL;
+  peerInfo.channel = 0;  // 0 = use current WiFi channel (allows flexibility when main controller connects to router)
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
