@@ -64,4 +64,19 @@
 
 #define NUM_BUZZERS 4 // Total number of buzzer nodes
 
+// ============================================================================
+// POWER MANAGEMENT CONFIGURATION
+// ============================================================================
+
+// CPU frequency scaling for power optimization
+#define CPU_FREQUENCY_MHZ 80  // Reduced from default 240MHz (saves ~40% CPU power)
+
+// Light sleep durations for different power modes (in microseconds)
+#define LIGHT_SLEEP_DURATION_READY_US 50000        // 50ms - Active mode (ready state, fast button response)
+#define LIGHT_SLEEP_DURATION_LOCKED_US 100000      // 100ms - Low power mode (locked out, button inactive)
+#define LIGHT_SLEEP_DURATION_DISCONNECTED_US 200000 // 200ms - Minimal power mode (disconnected, breathing LED)
+
+// Response time guarantee for quiz fairness
+#define MAX_BUTTON_RESPONSE_TIME_MS 50  // Maximum allowed button press to transmission latency
+
 #endif // CONFIG_H

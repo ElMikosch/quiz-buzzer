@@ -4,6 +4,8 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_sleep.h>
+#include <esp_pm.h>
 
 // Ensure NODE_ID is defined at compile time
 #ifndef NODE_ID
@@ -17,6 +19,15 @@
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
+
+// Power mode management for battery optimization
+enum PowerMode {
+  ACTIVE,      // Ready state: 50ms sleep, GPIO wake enabled, fast button response
+  LOW_POWER,   // Locked state: 100ms sleep, GPIO wake disabled, button inactive
+  MINIMAL      // Disconnected state: 200ms sleep, GPIO wake disabled, breathing LED
+};
+
+PowerMode currentPowerMode = MINIMAL; // Start in minimal power mode (disconnected)
 
 // LED state management
 LEDState currentLEDState = LED_OFF;
@@ -45,6 +56,53 @@ bool isConnected = false;
 
 // Main controller MAC address (will be set to AA:BB:CC:DD:EE:00)
 uint8_t mainControllerMAC[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x00};
+
+// ============================================================================
+// POWER MANAGEMENT
+// ============================================================================
+
+// Set power mode and configure sleep parameters accordingly
+void setPowerMode(PowerMode mode) {
+  if (currentPowerMode == mode) {
+    return; // No change needed
+  }
+  
+  PowerMode oldMode = currentPowerMode;
+  currentPowerMode = mode;
+  
+  // Log power mode transition
+  Serial.print("Power mode transition: ");
+  switch (oldMode) {
+    case ACTIVE: Serial.print("ACTIVE"); break;
+    case LOW_POWER: Serial.print("LOW_POWER"); break;
+    case MINIMAL: Serial.print("MINIMAL"); break;
+  }
+  Serial.print(" -> ");
+  switch (mode) {
+    case ACTIVE: Serial.println("ACTIVE"); break;
+    case LOW_POWER: Serial.println("LOW_POWER"); break;
+    case MINIMAL: Serial.println("MINIMAL"); break;
+  }
+}
+
+// Enter light sleep with appropriate wake sources
+void enterLightSleep(uint64_t duration_us) {
+  // Configure timer wake as backup
+  esp_sleep_enable_timer_wakeup(duration_us);
+  
+  // Configure GPIO wake only in ACTIVE mode (button responsive)
+  if (currentPowerMode == ACTIVE) {
+    // Enable GPIO wake on button press (LOW level due to pullup)
+    gpio_wakeup_enable((gpio_num_t)BUZZER_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+    esp_sleep_enable_gpio_wakeup();
+  } else {
+    // Disable GPIO wake in low power modes (button inactive)
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  }
+  
+  // Enter light sleep (wakes on GPIO interrupt or timer)
+  esp_light_sleep_start();
+}
 
 // ============================================================================
 // ESP-NOW CALLBACKS
@@ -115,23 +173,28 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
       isInFastBlinkPhase = true;
       fastBlinkStartTime = millis();
       Serial.println("  -> LED state: BLINK (selected)");
+      setPowerMode(LOW_POWER); // Button locked, use low power mode
     } else if (selectedBuzzer == 0) {
       // STATE_READY: no buzzer selected, all LEDs ON
       currentLEDState = LED_ON;
       Serial.println("  -> LED state: ON (ready state)");
+      setPowerMode(ACTIVE); // Button active, need fast response
     } else if (isPartialLockout) {
       // In PARTIAL_LOCKOUT: only explicitly locked buzzers turn OFF
       if (isLocked) {
         currentLEDState = LED_OFF;
         Serial.println("  -> LED state: OFF (locked in PARTIAL_LOCKOUT)");
+        setPowerMode(LOW_POWER); // Button locked, use low power mode
       } else {
         currentLEDState = LED_ON;
         Serial.println("  -> LED state: ON (not locked in PARTIAL_LOCKOUT)");
+        setPowerMode(ACTIVE); // Button active, need fast response
       }
     } else {
       // In LOCKED state: all non-selected buzzers turn OFF
       currentLEDState = LED_OFF;
       Serial.println("  -> LED state: OFF (not selected in LOCKED)");
+      setPowerMode(LOW_POWER); // Button locked, use low power mode
     }
     
     savedLEDState = currentLEDState;
@@ -146,23 +209,27 @@ void onDataReceive(const uint8_t *mac, const uint8_t *data, int len) {
     Serial.print("LED command received: ");
     Serial.println(msg.value);
 
-    // Handle state-specific initialization
+    // Handle state-specific initialization and power mode transitions
     if (currentLEDState == LED_ON) {
       ledcWrite(LED_PWM_CHANNEL, 255);  // Full brightness
       blinkState = true;
+      setPowerMode(ACTIVE); // Button active, need fast response
     } else if (currentLEDState == LED_OFF) {
       ledcWrite(LED_PWM_CHANNEL, 0);  // Off
       blinkState = false;
+      setPowerMode(LOW_POWER); // Button locked, use low power mode
     } else if (currentLEDState == LED_BLINK) {
       // Start two-stage blink pattern
       isInFastBlinkPhase = true;
       fastBlinkStartTime = millis();
       lastBlinkTime = millis();
+      setPowerMode(LOW_POWER); // Button locked (selected buzzer), use low power mode
     } else if (currentLEDState == LED_FADE) {
       // Initialize fade state
       fadeBrightness = 0;
       fadeDirection = 1;
       lastFadeTime = millis();
+      setPowerMode(MINIMAL); // Disconnected, use minimal power mode
     }
   }
 }
@@ -242,6 +309,9 @@ void checkConnection() {
     fadeBrightness = 0;
     fadeDirection = 1;
     lastFadeTime = now;
+    
+    // Enter minimal power mode for maximum battery savings
+    setPowerMode(MINIMAL);
   }
 }
 
@@ -339,10 +409,21 @@ void setup() {
   Serial.println(NODE_ID);
   Serial.println("========================================");
 
+  // Set CPU frequency for power optimization
+  setCpuFrequencyMhz(CPU_FREQUENCY_MHZ);
+  uint32_t actualFreq = getCpuFrequencyMhz();
+  Serial.print("✓ CPU frequency set to ");
+  Serial.print(actualFreq);
+  Serial.println(" MHz");
+
   // Configure GPIO pins
   pinMode(BUZZER_BUTTON_PIN, INPUT_PULLUP);
   pinMode(BUZZER_LED_PIN, OUTPUT);
   digitalWrite(BUZZER_LED_PIN, LOW);
+
+  // Configure GPIO wake capability for light sleep
+  gpio_wakeup_enable((gpio_num_t)BUZZER_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+  Serial.println("✓ GPIO wake configured for button pin");
 
   // Initialize PWM/LEDC for smooth LED control
   ledcSetup(LED_PWM_CHANNEL, LED_PWM_FREQUENCY, LED_PWM_RESOLUTION);
@@ -376,6 +457,14 @@ void setup() {
   }
   Serial.println("✓ ESP-NOW initialized");
 
+  // Enable WiFi modem sleep for power optimization
+  esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  if (psResult == ESP_OK) {
+    Serial.println("✓ WiFi modem sleep enabled");
+  } else {
+    Serial.println("✗ WARNING: Failed to enable WiFi modem sleep");
+  }
+
   // Register callbacks
   esp_now_register_send_cb(onDataSent);
   esp_now_register_recv_cb(onDataReceive);
@@ -403,6 +492,9 @@ void setup() {
   isConnected = false;
   lastHeartbeatTime = millis(); // Initialize to current time
 
+  // Start in minimal power mode (disconnected)
+  currentPowerMode = MINIMAL;
+
   Serial.println("========================================");
   Serial.println("Buzzer node ready!");
   Serial.println("Waiting for controller heartbeat...");
@@ -413,5 +505,24 @@ void loop() {
   checkConnection();
   handleButton();
   handleLED();
-  delay(1); // Small delay to prevent watchdog issues
+  
+  // Select sleep duration based on current power mode
+  uint64_t sleepDuration;
+  switch (currentPowerMode) {
+    case ACTIVE:
+      sleepDuration = LIGHT_SLEEP_DURATION_READY_US; // 50ms - fast button response
+      break;
+    case LOW_POWER:
+      sleepDuration = LIGHT_SLEEP_DURATION_LOCKED_US; // 100ms - button inactive
+      break;
+    case MINIMAL:
+      sleepDuration = LIGHT_SLEEP_DURATION_DISCONNECTED_US; // 200ms - disconnected
+      break;
+    default:
+      sleepDuration = LIGHT_SLEEP_DURATION_READY_US;
+      break;
+  }
+  
+  // Enter light sleep with appropriate wake sources
+  enterLightSleep(sleepDuration);
 }
