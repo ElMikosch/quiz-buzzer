@@ -2,6 +2,10 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include "protocol.h"
 #include "config.h"
 
@@ -51,6 +55,85 @@ bool nodeConnected[NUM_BUZZERS] = {false, false, false, false};
 char serialInputBuffer[SERIAL_INPUT_BUFFER_SIZE];
 int serialInputIndex = 0;
 
+// BLE variables
+BLEServer* pBLEServer = nullptr;
+BLECharacteristic* pTxCharacteristic = nullptr;
+BLECharacteristic* pRxCharacteristic = nullptr;
+bool bleClientConnected = false;
+String bleDeviceName = "";
+
+// Forward declarations for BLE callbacks
+void handleCorrectAnswer();
+void handleWrongAnswer();
+void handleFullReset();
+
+// ============================================================================
+// BLE CALLBACK CLASSES
+// ============================================================================
+
+class ServerCallbacks: public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    bleClientConnected = true;
+    Serial.println("BLE client connected");
+  }
+
+  void onDisconnect(BLEServer* pServer) {
+    bleClientConnected = false;
+    Serial.println("BLE client disconnected");
+    
+    // Restart advertising for new connections
+    BLEDevice::startAdvertising();
+    Serial.println("BLE advertising restarted");
+  }
+};
+
+class RxCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    
+    if (value.length() > 0) {
+      String command = String(value.c_str());
+      command.trim(); // Remove whitespace and newlines
+      
+      Serial.print("BLE CMD: ");
+      Serial.println(command);
+      
+      // Process command (reuse serial command logic)
+      if (command == "CORRECT") {
+        handleCorrectAnswer();
+      } else if (command == "WRONG") {
+        handleWrongAnswer();
+      } else if (command == "RESET") {
+        handleFullReset();
+      } else if (command.length() > 0) {
+        Serial.print("BLE CMD_ERR:UNKNOWN:");
+        Serial.println(command);
+      }
+    }
+  }
+};
+
+// Forward declarations
+void handleCorrectAnswer();
+void handleWrongAnswer();
+void handleFullReset();
+
+// ============================================================================
+// MESSAGE BRIDGING (Send to both Serial and BLE)
+// ============================================================================
+
+void sendToAllInterfaces(const String& message) {
+  // Always send to USB Serial
+  Serial.println(message);
+  
+  // Send to BLE if client connected
+  if (bleClientConnected && pTxCharacteristic != nullptr) {
+    String bleMessage = message + "\n";
+    pTxCharacteristic->setValue(bleMessage.c_str());
+    pTxCharacteristic->notify();
+  }
+}
+
 // ============================================================================
 // SERIAL MESSAGE QUEUE
 // ============================================================================
@@ -67,7 +150,7 @@ void queueMessage(const String& msg) {
 
 void processMessageQueue() {
   while (queueCount > 0) {
-    Serial.println(messageQueue[queueHead]);
+    sendToAllInterfaces(messageQueue[queueHead]);
     queueHead = (queueHead + 1) % MESSAGE_QUEUE_SIZE;
     queueCount--;
   }
@@ -141,8 +224,8 @@ void updateNodeConnection(uint8_t nodeId) {
 
   if (!wasConnected) {
     // Node reconnected
-    Serial.print("RECONNECT:");
-    Serial.println(nodeId);
+    String msg = "RECONNECT:" + String(nodeId);
+    sendToAllInterfaces(msg);
   }
 }
 
@@ -154,8 +237,8 @@ void checkNodeTimeouts() {
       if (now - nodeLastSeen[i] > CONNECTION_TIMEOUT_MS) {
         // Node timed out
         nodeConnected[i] = false;
-        Serial.print("DISCONNECT:");
-        Serial.println(i + 1);
+        String msg = "DISCONNECT:" + String(i + 1);
+        sendToAllInterfaces(msg);
       }
     }
   }
@@ -216,8 +299,8 @@ void handleBuzzerPress(uint8_t nodeId, uint32_t timestamp) {
     Serial.print(nodeId);
     Serial.println(" pressed and locked in");
 
-    // Send to PC
-    queueMessage("BUZZER:" + String(nodeId));
+    // Send to PC/BLE clients
+    queueMessage("BUZZ " + String(nodeId));
 
     // Update LEDs: selected blinks, others off
     updateAllLEDs();
@@ -241,7 +324,7 @@ void handleCorrectAnswer() {
   selectedBuzzer = 0;
   lockedBuzzers = 0;
 
-  // Send to PC
+  // Send to PC/BLE clients
   queueMessage("CORRECT");
 
   // All LEDs on
@@ -273,7 +356,7 @@ void handleWrongAnswer() {
     selectedBuzzer = 0; // Clear selection so another buzzer can try
   }
 
-  // Send to PC
+  // Send to PC/BLE clients
   queueMessage("WRONG");
 
   // Update LEDs
@@ -288,7 +371,7 @@ void handleFullReset() {
   selectedBuzzer = 0;
   lockedBuzzers = 0;
 
-  // Send to PC
+  // Send to PC/BLE clients
   queueMessage("RESET");
 
   // All LEDs on
@@ -423,6 +506,70 @@ void handleSerialInput() {
 }
 
 // ============================================================================
+// BLE INITIALIZATION
+// ============================================================================
+
+void initBLE() {
+  Serial.println("========================================");
+  Serial.println("INITIALIZING BLE");
+  Serial.println("========================================");
+  
+  // Get MAC address to create unique device name
+  uint8_t mac[6];
+  esp_wifi_get_mac(WIFI_IF_STA, mac);
+  
+  // Create device name with last 4 MAC digits
+  char deviceName[32];
+  snprintf(deviceName, sizeof(deviceName), "%s-%02X%02X", 
+           BLE_DEVICE_NAME, mac[4], mac[5]);
+  bleDeviceName = String(deviceName);
+  
+  Serial.print("BLE Device Name: ");
+  Serial.println(bleDeviceName);
+  
+  // Initialize BLE
+  BLEDevice::init(bleDeviceName.c_str());
+  
+  // Create BLE Server
+  pBLEServer = BLEDevice::createServer();
+  pBLEServer->setCallbacks(new ServerCallbacks());
+  
+  // Create Nordic UART Service
+  BLEService *pService = pBLEServer->createService(BLE_SERVICE_UUID);
+  
+  // Create TX Characteristic (ESP32 -> Client, notifications)
+  pTxCharacteristic = pService->createCharacteristic(
+    BLE_TX_CHAR_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ
+  );
+  pTxCharacteristic->addDescriptor(new BLE2902()); // Enable notifications
+  
+  // Create RX Characteristic (Client -> ESP32, write)
+  pRxCharacteristic = pService->createCharacteristic(
+    BLE_RX_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  pRxCharacteristic->setCallbacks(new RxCallbacks());
+  
+  // Start service
+  pService->start();
+  Serial.println("✓ BLE service started");
+  
+  // Configure advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // Connection interval: 7.5ms
+  pAdvertising->setMaxPreferred(0x12);  // Connection interval: 22.5ms
+  
+  // Start advertising
+  BLEDevice::startAdvertising();
+  Serial.println("✓ BLE advertising started");
+  Serial.println("Clients can now connect via BLE");
+  Serial.println("========================================");
+}
+
+// ============================================================================
 // SETUP AND MAIN LOOP
 // ============================================================================
 
@@ -487,8 +634,14 @@ void setup() {
     }
   }
 
+  // Initialize BLE
+  initBLE();
+
   Serial.println("========================================");
   Serial.println("Main controller ready!");
+  Serial.println("- ESP-NOW for buzzer nodes");
+  Serial.println("- USB Serial for commands");
+  Serial.println("- BLE for wireless clients");
   Serial.println("Initializing all LEDs to ON (READY state)");
   Serial.println("========================================");
 
